@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
-OPTIONS = {
-    # Bus numbers to track.
-    'busNumbers': [3001, 3002, 3732, 3768, 3770, 3619],
-    # SMART API endpoint.
-    'apiEndpoint': 'https://www.smartbus.org/DesktopModules/Smart.Endpoint/proxy.ashx',
-    # Polling interval, in seconds.
-    'interval': 300,
-}
 
 import urllib.request, json, discord, asyncio, datetime
 from collections import deque
-from creds import CREDS
+from config import CREDS, OPTIONS
 from discord.ext import commands
 
 # This could be extractable and reusable, if I cared enough, but I don't, right now.
@@ -20,10 +12,17 @@ class SmartBusAPI(object):
 
     def getPredictions(self, bus):
         apiurl = self.apiEndpoint + "?method=predictionsforbus&vid=" + str(bus)
+        req = urllib.request.Request(
+            apiurl, 
+            data = None,
+            headers = {
+                'User-Agent': 'Bendybot/0.0.1 (https://github.com/alis0nc/bendyboi-tracker; bendyboi.tracker@alisonc.net)'
+            }
+        )
         data = None
         try:
-            with urllib.request.urlopen(apiurl) as url:
-                data = json.load(url)
+            with urllib.request.urlopen(req) as u:
+                data = json.load(u)
         except urllib.error.URLError:
             pass # swallow errors and pass a None up the chain
         return data
@@ -68,16 +67,19 @@ class BendyboiTracker(object):
 
     def run(self):
         for busid in self.busesToTrack:
-            r = api.getPredictions(busid)
+            r = api.getPredictions(busid) or {}
             r = r.get('bustime-response', None)
             if r and r.get('error', None) and self.busesOnline[busid]: # bus is offline now and was online the last time we checked
                 self.busesOnline[busid] = False
                 self.notify.append(OfflineNotification(busid))
             elif r and r.get('error', None): # bus is offline and was the last time we checked
                 pass
-            elif r and not self.busesOnline[busid]: # bus is online and wasn't the last time we checked
+            elif r and r.get('prd', None) and not self.busesOnline[busid]: # bus is online and wasn't the last time we checked
                 self.busesOnline[busid] = True
-                firstPrediction = r['prd'][0]
+                try:
+                    firstPrediction = r['prd'][0]
+                except KeyError: # Only one prediction, so API doesn't gives us an array >(
+                    firstPrediction = r['prd']
                 route = firstPrediction['rt']
                 routeName = firstPrediction['des']
                 direction = firstPrediction['rtdir']
@@ -85,7 +87,7 @@ class BendyboiTracker(object):
                 stopId = firstPrediction['stpid']
                 predictedTime = firstPrediction['prdtm']
                 self.notify.append(OnlineNotification(busid, route, routeName, direction, firstStop, stopId, predictedTime))
-            elif r: # bus is online and was the last time we checked
+            elif r and r.get('prd', None): # bus is online and was the last time we checked
                 pass
             else: # we didn't even get a valid API response
                 pass
@@ -113,7 +115,10 @@ async def whereis(busid : int):
     resp = api.getPredictions(busid)
     resp = resp.get('bustime-response', None)
     if resp and not resp.get('error', None):
-        firstPrediction = resp['prd'][0]
+        try:
+            firstPrediction = resp['prd'][0]
+        except KeyError: # Only one prediction, so API doesn't gives us an array >(
+            firstPrediction = resp['prd']
         route = firstPrediction['rt']
         routeName = firstPrediction['des']
         direction = firstPrediction['rtdir']
@@ -124,6 +129,10 @@ async def whereis(busid : int):
             + routeName + '. Next stop ' + nextStop + ' (ID ' + stopId + ') at ' + predictedTime)
     else:
         await client.say('Bus ' + str(busid) + ' is currently offline.')
+
+@client.command()
+async def github():
+    await client.say('https://github.com/alis0nc/bendyboi-tracker')
 
 @client.event
 async def on_ready():
